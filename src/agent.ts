@@ -7,23 +7,37 @@ import { TOOL_DEFINITIONS } from "./tools/definitions";
 import { BrowserTools } from "./tools/browser";
 import { logger } from "./logger";
 import { config } from "./config";
+import { bus } from "./events";
 
-const SYSTEM_PROMPT = `You are a browser automation agent. You control a real web browser using the provided tools.
+const SYSTEM_PROMPT = `You are an autonomous website automation agent. You control a real Chromium web browser using the provided tools.
 
-Guidelines:
-- navigate_to_url and open_browser are already done before you start - go straight to the task.
-- Use get_page_snapshot to understand the page structure and find element selectors.
-- Use fill_element(selector, text) to fill form inputs and textareas - it handles scrolling, clicking, and typing in one step.
-- After filling each field, call take_screenshot to verify the text was entered.
-- The demo form on the shadcn page has two fields: input[name="title"] (labeled "Bug Title") and textarea[name="description"] (labeled "Description").
-- When BOTH fields are filled with the correct text, respond with TASK_COMPLETE.
-- If fill_element fails, try scroll(0, 600) then retry, or try an alternative selector.
-- Do NOT invent tool names that are not in the tools list.`;
+The user gives you a natural-language request that names a WEBSITE and an ACTION to perform on it (for example: "go to wikipedia.org and search for quantum computing", or "open github.com/login and type my username in the username field").
+
+Your workflow:
+1. The browser is already open. Call navigate_to_url to go to the website named in the request. Infer the full URL - add "https://" if the scheme is missing, and ".com" only if it is clearly implied.
+2. Call get_page_snapshot to inspect the page structure and discover element selectors, labels, and buttons.
+3. Perform the requested action using the most appropriate tools:
+   - fill_element(selector, text) for text inputs and textareas (handles scrolling, focus, and React controlled inputs).
+   - find_element(selector) to get an element's (x, y), then click_on_screen(x, y) for buttons, links, or non-standard widgets.
+   - send_keys for typing into an already-focused element, scroll to reveal hidden content, double_click when a single click is not enough.
+4. Call take_screenshot after each meaningful step so the user can see progress.
+5. When the requested action is finished, reply with a SHORT plain-text summary of what you did, ending with the token TASK_COMPLETE.
+
+Rules:
+- Prefer fill_element over click_on_screen + send_keys for any input or textarea.
+- Always get_page_snapshot before guessing selectors on an unfamiliar page.
+- If a tool fails, adapt: scroll, take a fresh snapshot, or try an alternative selector or coordinates. Do not give up after one failure.
+- Only use tools from the provided list. Never invent tool names.
+- Be efficient - avoid redundant or repeated tool calls once a step has succeeded.
+- If the request is impossible (e.g. the named site or element does not exist), explain why and end with TASK_COMPLETE.`;
 
 /**
  * Implements a ReAct-style agentic loop: the LLM reasons and emits tool calls,
  * the loop executes them and feeds results back as messages, repeating until the
  * model signals completion (finish_reason "stop") or a safety iteration cap is hit.
+ *
+ * The loop is website- and task-agnostic: the concrete site and action come
+ * entirely from the user's natural-language task string, not from hardcoded logic.
  */
 export class AgentLoop {
   private client: OpenAI;
@@ -34,7 +48,7 @@ export class AgentLoop {
     this.browserTools = browserTools;
   }
 
-  async run(task: string): Promise<void> {
+  async run(task: string): Promise<string> {
     logger.info("Agent starting task", task);
 
     // Mutable conversation history passed in full on every API call - the model has no memory between calls,
@@ -46,6 +60,7 @@ export class AgentLoop {
 
     for (let iteration = 1; iteration <= config.maxIterations; iteration++) {
       logger.info(`--- Iteration ${iteration}/${config.maxIterations} ---`);
+      bus.emitEvent({ type: "iteration", current: iteration, max: config.maxIterations });
 
       const response = await this.client.chat.completions.create({
         model: config.model,
@@ -60,14 +75,24 @@ export class AgentLoop {
       // Append assistant message to history
       messages.push(assistantMsg as ChatCompletionMessageParam);
 
-      // "stop" means the LLM decided it has nothing more to do - task is complete or it gave a final answer.
-      if (choice.finish_reason === "stop" || !assistantMsg.tool_calls?.length) {
-        const content = assistantMsg.content ?? "";
-        logger.info("Agent finished.", content);
+      // Strip the TASK_COMPLETE sentinel so it never leaks into the UI summary/feed.
+      const cleanContent = (assistantMsg.content ?? "").replace(/\bTASK_COMPLETE\b/g, "").trim();
+
+      // Surface any reasoning/text the model produced this turn to the UI.
+      if (cleanContent) {
+        bus.emitEvent({ type: "assistant", content: cleanContent });
+      }
+
+      // Completion is driven SOLELY by the absence of tool calls. We deliberately do
+      // not key off finish_reason: NIM/Llama models served over the OpenAI-compatible
+      // endpoint frequently report finish_reason "stop" even when tool_calls are
+      // present, which would silently drop the pending calls and end the task early.
+      if (!assistantMsg.tool_calls?.length) {
+        logger.info("Agent finished.", cleanContent);
         console.log("\n=== AGENT RESPONSE ===");
-        console.log(content);
+        console.log(cleanContent);
         console.log("======================\n");
-        return;
+        return cleanContent;
       }
 
       // Execute all tool calls the model requested in this single response before making the next API call.
@@ -84,9 +109,11 @@ export class AgentLoop {
           // Empty args for tools with no parameters
         }
 
+        bus.emitEvent({ type: "tool-call", name, args });
         logger.tool(name, args, "executing...");
         const result = await this.browserTools.execute(name, args);
         logger.tool(name, args, result);
+        bus.emitEvent({ type: "tool-result", name, success: result.success, result: result.success ? result.data : result.error });
 
         toolResultMessages.push({
           role: "tool",

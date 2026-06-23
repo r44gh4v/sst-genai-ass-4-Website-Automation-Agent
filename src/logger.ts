@@ -1,12 +1,23 @@
+import { bus } from "./events";
+
 type Level = "INFO" | "WARN" | "ERROR" | "TOOL";
 
 function log(level: Level, message: string, data?: unknown): void {
   const ts = new Date().toISOString();
   const prefix = `[${ts}] [${level}]`;
-  if (data !== undefined) {
-    console.log(`${prefix} ${message}`, typeof data === "string" ? data : JSON.stringify(data, null, 2));
+  const dataStr = data === undefined ? undefined : typeof data === "string" ? data : JSON.stringify(data, null, 2);
+
+  if (dataStr !== undefined) {
+    console.log(`${prefix} ${message}`, dataStr);
   } else {
     console.log(`${prefix} ${message}`);
+  }
+
+  // Mirror INFO/WARN/ERROR lines to the web UI. TOOL lines are streamed by the
+  // agent itself as richer structured tool-call/tool-result events, so skip them
+  // here to avoid duplicate noise in the browser panel.
+  if (level !== "TOOL") {
+    bus.emitEvent({ type: "log", level, message, data: dataStr });
   }
 }
 

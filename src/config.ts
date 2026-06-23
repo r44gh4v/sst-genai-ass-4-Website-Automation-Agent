@@ -12,7 +12,11 @@ function required(name: string): string {
 export const config = {
   nimApiKey: required("NIM_API_KEY"),
   nimBaseUrl: process.env.NIM_BASE_URL ?? "https://integrate.api.nvidia.com/v1",
-  model: process.env.MODEL ?? "nvidia/llama-3.3-nemotron-super-49b-v1",
-  headless: process.env.HEADLESS !== "false",
-  maxIterations: Number(process.env.MAX_ITERATIONS ?? 20),
+  // meta/llama-3.3-70b-instruct: large instruct model on NIM with reliable
+  // OpenAI-style function/tool calling - the key requirement for this agent loop.
+  model: process.env.MODEL ?? "meta/llama-3.3-70b-instruct",
+  // Visible browser by default so the user can watch the agent work in real time.
+  headless: process.env.HEADLESS === "true",
+  maxIterations: Number(process.env.MAX_ITERATIONS ?? 25),
+  port: Number(process.env.PORT ?? 3000),
 };

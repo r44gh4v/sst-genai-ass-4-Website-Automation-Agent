@@ -3,6 +3,7 @@ import * as path from "path";
 import { chromium, Browser, Page } from "playwright";
 import { logger } from "../logger";
 import { config } from "../config";
+import { bus } from "../events";
 
 type ToolResult = { success: true; data: unknown } | { success: false; error: string };
 
@@ -79,8 +80,14 @@ export class BrowserTools {
       const name = args.filename ? `${args.filename}_${ts}` : `screenshot_${ts}`;
       const filePath = path.join(SCREENSHOTS_DIR, `${name}.png`);
       const page = this.getPage();
-      await page.screenshot({ path: filePath, fullPage: false });
+      const buffer = await page.screenshot({ path: filePath, fullPage: false });
       logger.info("Screenshot saved", filePath);
+      // Stream the image to the web UI as a base64 data URL so the user sees it live.
+      bus.emitEvent({
+        type: "screenshot",
+        name: `${name}.png`,
+        dataUrl: `data:image/png;base64,${buffer.toString("base64")}`,
+      });
       return { success: true, data: { path: filePath } };
     } catch (e) {
       return { success: false, error: String(e) };

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/styles.css" />
+    <title>Website Automation Agent</title>
+</head>
+
+<body>
+    <header>
+        <h1>Website Automation Agent</h1>
+    </header>
+
+    <main>
+        <!-- LEFT: input + summary + screenshots -->
+        <div class="col">
+            <div class="card">
+                <h2>Your request</h2>
+                <textarea id="prompt"
+                    placeholder="e.g. Go to wikipedia.org and search for 'quantum computing'"></textarea>
+                <div class="examples" id="examples"></div>
+                <div class="row">
+                    <div class="status">
+                        <span class="dot" id="dot"></span>
+                        <span id="statusText">Idle</span>
+                        <span id="iter" class="muted"></span>
+                    </div>
+                    <button id="run">Run automation</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Result summary</h2>
+                <div id="summary" class="empty">No run yet.</div>
+            </div>
+
+            <div class="card grow">
+                <h2>Screenshots (live)</h2>
+                <div class="card-body">
+                    <div id="shots"><span class="empty">Screenshots appear here as the agent captures them.</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT: live activity feed (full height) -->
+        <div class="col">
+            <div class="card grow">
+                <h2>Live activity</h2>
+                <div class="card-body">
+                    <div id="feed"><span class="empty">Agent steps stream here in real time.</span></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="lightbox"><img id="lightboxImg" alt="screenshot" /></div>
+
+    <script src="/app.js" defer></script>
+</body>
+
+</html>
