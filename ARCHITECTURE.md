@@ -2,7 +2,7 @@
 
 ## 1. Goal
 
-Build an autonomous website automation agent that, given a **free-form natural-language request** naming any website and any action, drives a real browser to perform it — exposed through a local web UI. This is a mini version of tools like *Browser Use*.
+Build an autonomous website automation agent that, given a **free-form natural-language request** naming any website and any action, drives a real browser to perform it - exposed through a local web UI. This is a mini version of tools like *Browser Use*.
 
 ## 2. High-level design
 
@@ -22,14 +22,14 @@ Build an autonomous website automation agent that, given a **free-form natural-l
 └───────────────┬─────────────────────────────────────────────┘
                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ AgentLoop (src/agent.ts)  — ReAct-style tool-use loop        │
+│ AgentLoop (src/agent.ts)  - ReAct-style tool-use loop        │
 │   system prompt + user task ─► Nvidia NIM (OpenAI SDK)        │
 │   model returns tool calls ─► execute ─► feed results back   │
 │   repeat until TASK_COMPLETE or max iterations               │
 └───────────────┬─────────────────────────────────────────────┘
                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ BrowserTools (src/tools/browser.ts)  — Playwright wrappers    │
+│ BrowserTools (src/tools/browser.ts)  - Playwright wrappers    │
 │   open_browser, navigate_to_url, get_page_snapshot,          │
 │   find_element, fill_element, click_on_screen, double_click,  │
 │   send_keys, scroll, take_screenshot, close_browser           │
@@ -47,14 +47,14 @@ The LLM is the planner. On each iteration it sees the full conversation (system 
 A hard `MAX_ITERATIONS` cap prevents runaway loops from burning API quota or hanging.
 
 ### 3.2 Website- and task-agnostic
-The previous version hardcoded the URL and a shadcn-specific task. Now the **system prompt is generic** and the concrete website + action arrive only via the user's prompt. The agent itself navigates (`navigate_to_url`) and discovers the page (`get_page_snapshot`) before acting — no per-site code.
+The previous version hardcoded the URL and a shadcn-specific task. Now the **system prompt is generic** and the concrete website + action arrive only via the user's prompt. The agent itself navigates (`navigate_to_url`) and discovers the page (`get_page_snapshot`) before acting - no per-site code.
 
 ### 3.3 Element detection strategy
 Two complementary tools give the LLM "eyes":
-- `get_page_snapshot` extracts headings, inputs (with labels/names/placeholders), buttons, and links as compact text — low-token DOM awareness without vision.
+- `get_page_snapshot` extracts headings, inputs (with labels/names/placeholders), buttons, and links as compact text - low-token DOM awareness without vision.
 - `find_element` resolves a CSS selector to center `(x, y)` coordinates for coordinate-based clicks.
 
-For form fields, `fill_element` uses Playwright's `locator.fill()`, which atomically sets the value and fires React's synthetic `onChange` — more reliable than click + per-key typing on controlled inputs.
+For form fields, `fill_element` uses Playwright's `locator.fill()`, which atomically sets the value and fires React's synthetic `onChange` - more reliable than click + per-key typing on controlled inputs.
 
 ### 3.4 Streaming via an event bus
 A single `EventEmitter` singleton (`src/events.ts`) decouples the agent/tools/logger from the HTTP transport. They just publish typed `AgentEvent`s; the server subscribes once and forwards each to all connected browsers over **Server-Sent Events**. SSE (not WebSockets) is the right fit: the stream is one-directional (server → UI) and works over plain HTTP with no extra dependencies.
@@ -62,7 +62,7 @@ A single `EventEmitter` singleton (`src/events.ts`) decouples the agent/tools/lo
 Screenshots are streamed as base64 data URLs so they render in the UI the instant they are captured.
 
 ### 3.5 Zero extra runtime dependencies
-The server uses only Node's built-in `http` module. The whole stack is `playwright` + `openai` + `dotenv` — nothing added for the web layer — keeping setup friction minimal.
+The server uses only Node's built-in `http` module. The whole stack is `playwright` + `openai` + `dotenv` - nothing added for the web layer - keeping setup friction minimal.
 
 ### 3.6 Concurrency & lifecycle
 The browser is a single shared resource, so the server enforces **one run at a time** (a `busy` flag → HTTP 409 while busy). Each run opens a fresh browser, clears old screenshots, and the `finally` block guarantees the browser closes even on error.

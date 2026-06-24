@@ -110,7 +110,7 @@ es.onmessage = (e) => {
             break;
     }
 };
-// On (re)connect — including the very first connect on page load — reconcile the
+// On (re)connect - including the very first connect on page load - reconcile the
 // UI with the server's real state via /health. This recovers from any events lost
 // during a disconnect gap (including a missed terminal status event) so the Run
 // button never gets stuck disabled, and reflects an in-progress run after a reload.

@@ -71,7 +71,7 @@ body {
     background: transparent;
 }
 
-/* Slim, transparent header — title only */
+/* Slim, transparent header - title only */
 header {
     color: var(--text);
     flex: 0 0 auto;

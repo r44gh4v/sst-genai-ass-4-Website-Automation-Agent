@@ -2,7 +2,7 @@
 
 An AI-driven browser automation agent built with **Nvidia NIM** (LLM) and **Playwright** (browser control), driven from a **local web UI**.
 
-Type a natural-language request naming **any website** and **any action** — the agent opens a real Chromium browser, figures out the page, and performs the action autonomously while streaming every step (logs, tool calls, and live screenshots) back to the web page.
+Type a natural-language request naming **any website** and **any action** - the agent opens a real Chromium browser, figures out the page, and performs the action autonomously while streaming every step (logs, tool calls, and live screenshots) back to the web page.
 
 > This is a mini "Browser Use": an LLM tool-use loop deciding which browser actions to take to satisfy a free-form request.
 
@@ -10,7 +10,7 @@ Type a natural-language request naming **any website** and **any action** — th
 
 ## What you can ask
 
-The website and the action are **not hardcoded** — they come entirely from your prompt. Examples:
+The website and the action are **not hardcoded** - they come entirely from your prompt. Examples:
 
 - `Go to wikipedia.org and search for 'quantum computing'`
 - `Open https://ui.shadcn.com/docs/forms/react-hook-form and fill the Bug Title with 'Test bug' and the Description with 'Filed by the automation agent'`
@@ -66,16 +66,16 @@ All required capabilities are present as composable, LLM-callable tools:
 
 | Tool | Description |
 |---|---|
-| `open_browser` | Launch Chromium via Playwright (idempotent — closes any existing instance first) |
+| `open_browser` | Launch Chromium via Playwright (idempotent - closes any existing instance first) |
 | `navigate_to_url` | Navigate to a URL, waits for `networkidle` so SPAs finish rendering |
 | `take_screenshot` | Capture browser state to a timestamped PNG **and stream it live to the UI** |
 | `click_on_screen` | Mouse click at pixel `(x, y)` coordinates |
 | `double_click` | Double-click at pixel `(x, y)` coordinates |
 | `send_keys` | Type text into the currently focused element (30 ms/char) |
 | `scroll` | Scroll the page by pixel deltas via `mouse.wheel` |
-| `get_page_snapshot` | Extract headings, inputs, buttons, links as structured text — gives the LLM DOM awareness |
+| `get_page_snapshot` | Extract headings, inputs, buttons, links as structured text - gives the LLM DOM awareness |
 | `find_element` | Locate an element by CSS selector, return its center `(x, y)` for clicking |
-| `fill_element` | Fill a form field by selector via `locator.fill()` — correctly triggers React `onChange` |
+| `fill_element` | Fill a form field by selector via `locator.fill()` - correctly triggers React `onChange` |
 | `close_browser` | Close the browser and release Playwright resources |
 
 ---
@@ -84,7 +84,7 @@ All required capabilities are present as composable, LLM-callable tools:
 
 ### Prerequisites
 - Node.js 18+
-- An Nvidia NIM API key — get one free at [build.nvidia.com](https://build.nvidia.com)
+- An Nvidia NIM API key - get one free at [build.nvidia.com](https://build.nvidia.com)
 
 ### Installation
 
