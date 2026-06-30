@@ -9,7 +9,6 @@ import { BrowserTools } from "./tools/browser";
 import { AgentLoop } from "./agent";
 
 const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
-const SCREENSHOTS_DIR = path.resolve(process.cwd(), "screenshots");
 
 // Single shared LLM client - the agent loop reuses it across runs.
 const client = new OpenAI({ apiKey: config.nimApiKey, baseURL: config.nimBaseUrl });
@@ -17,6 +16,9 @@ const client = new OpenAI({ apiKey: config.nimApiKey, baseURL: config.nimBaseUrl
 // Only one automation run at a time: the browser is a single shared resource and
 // concurrent runs would fight over the same page. New requests are rejected while busy.
 let busy = false;
+
+// Abort controller for the in-flight run, so the UI's Stop button can cancel it.
+let currentAbort: AbortController | null = null;
 
 /** Connected Server-Sent-Events clients. Every AgentEvent is fanned out to all of them. */
 const sseClients = new Set<http.ServerResponse>();
@@ -39,25 +41,17 @@ function broadcast(event: AgentEvent): void {
 // browser tools all publish to the bus; this forwards everything to the browsers.
 bus.onEvent(broadcast);
 
-function clearScreenshots(): void {
-  if (fs.existsSync(SCREENSHOTS_DIR)) {
-    fs.readdirSync(SCREENSHOTS_DIR)
-      .filter((f) => f.endsWith(".png"))
-      .forEach((f) => fs.unlinkSync(path.join(SCREENSHOTS_DIR, f)));
-  }
-}
-
 /**
  * Runs one full automation task: opens a fresh browser, hands the prompt to the
  * agent loop, and guarantees the browser is closed afterwards. All progress is
  * streamed to connected clients via the event bus, so this returns void.
  */
 async function runTask(prompt: string): Promise<void> {
-  // `busy` is set synchronously by the caller (handleRun) before this runs, so the
-  // guard cannot be bypassed by a concurrent request between check and set.
-  const browserTools = new BrowserTools();
+  const browserTools = new BrowserTools(client);
+  const runId = new Date().toISOString().replace(/T/, "_").replace(/[:.]/g, "-").slice(0, 19);
+  browserTools.startRun(runId);
+  currentAbort = new AbortController();
   try {
-    clearScreenshots();
     bus.emitEvent({ type: "status", state: "running", message: "Launching browser..." });
 
     const opened = await browserTools.open_browser({ headless: config.headless });
@@ -66,7 +60,7 @@ async function runTask(prompt: string): Promise<void> {
     }
 
     const agent = new AgentLoop(client, browserTools);
-    const summary = await agent.run(prompt);
+    const summary = await agent.run(prompt, currentAbort.signal);
 
     bus.emitEvent({ type: "status", state: "done", message: summary || "Task finished." });
   } catch (err) {
@@ -74,6 +68,7 @@ async function runTask(prompt: string): Promise<void> {
     bus.emitEvent({ type: "status", state: "error", message: String(err) });
   } finally {
     await browserTools.close_browser();
+    currentAbort = null;
     busy = false;
   }
 }
@@ -163,15 +158,32 @@ export function startServer(): void {
     const url = (req.url ?? "/").split("?")[0];
 
     if (req.method === "GET" && url === "/") return serveFile(res, "index.html");
-    if (req.method === "GET" && (url === "/styles.css" || url === "/app.js")) return serveFile(res, url);
+    if (req.method === "GET" && (url === "/styles.css" || url === "/app.js" || url === "/explainer.html")) return serveFile(res, url);
     if (req.method === "GET" && url === "/events") return handleSse(req, res);
     if (req.method === "POST" && url === "/run") {
       void handleRun(req, res);
       return;
     }
+    if (req.method === "POST" && url === "/stop") {
+      if (currentAbort && busy) {
+        currentAbort.abort();
+        bus.emitEvent({ type: "status", state: "running", message: "Stopping..." });
+        res.writeHead(202, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ stopping: true }));
+      } else {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "No run in progress." }));
+      }
+      return;
+    }
     if (req.method === "GET" && url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, busy }));
+      res.end(JSON.stringify({
+        ok: true,
+        busy,
+        model: config.model,
+        vision: config.visionEnabled ? config.visionModel : null,
+      }));
       return;
     }
 
@@ -182,6 +194,7 @@ export function startServer(): void {
   server.listen(config.port, () => {
     logger.info("=== Website Automation Agent ===");
     logger.info("Model", config.model);
+    logger.info("Vision", config.visionEnabled ? config.visionModel : "disabled");
     logger.info("NIM Base URL", config.nimBaseUrl);
     logger.info(`Open the UI at http://localhost:${config.port}`);
   });

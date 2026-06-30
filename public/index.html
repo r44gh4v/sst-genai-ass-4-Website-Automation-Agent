@@ -3,58 +3,82 @@
 
 <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" href="data:," />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
-    <title>Website Automation Agent</title>
+    <title>Browser Automation Agent</title>
 </head>
 
 <body>
     <header>
-        <h1>Website Automation Agent</h1>
+        <div class="brand">
+            <div class="logo">🪩</div>
+            <div class="brand-text">
+                <h1>Browser Automation Agent</h1>
+                <p class="sub">Describe the task & a robot will make the browser do it for you ;)</p>
+            </div>
+        </div>
+
+        <div class="meta">
+            <span class="pill" id="statusPill">
+                <!-- <span class="dot" id="dot"></span> -->
+                <span id="statusText">Idle</span>
+                <span id="iter" class="muted"></span>
+            </span>
+        </div>
     </header>
 
     <main>
-        <!-- LEFT: input + summary + screenshots -->
-        <div class="col">
-            <div class="card">
-                <h2>Your request</h2>
+        <!-- LEFT col: task input -->
+        <section class="col col-left">
+            <div class="card grow">
+                <div class="card-head">
+                    <h2>Task</h2>
+                </div>
                 <textarea id="prompt"
-                    placeholder="e.g. Go to wikipedia.org and search for 'quantum computing'"></textarea>
+                    placeholder="e.g. Go to wikipedia.org and search for 'quantum computing', then summarise the first paragraph"></textarea>
                 <div class="examples" id="examples"></div>
                 <div class="row">
-                    <div class="status">
-                        <span class="dot" id="dot"></span>
-                        <span id="statusText">Idle</span>
-                        <span id="iter" class="muted"></span>
-                    </div>
-                    <button id="run">Run automation</button>
+                    <button id="run" class="btn btn-primary">Run automation</button>
+                    <button id="stop" class="btn btn-ghost" hidden>Stop</button>
                 </div>
             </div>
+        </section>
 
-            <div class="card">
-                <h2>Result summary</h2>
-                <div id="summary" class="empty">No run yet.</div>
-            </div>
-
-            <div class="card grow">
-                <h2>Screenshots (live)</h2>
+        <!-- CENTER col: live activity feed -->
+        <section class="col col-center">
+            <div class="card grow" id="panel-activity">
+                <div class="card-head">
+                    <h2>Live activity <span class="count" id="feedCount"></span></h2>
+                    <button id="clearFeed" class="mini-btn">Clear</button>
+                </div>
                 <div class="card-body">
-                    <div id="shots"><span class="empty">Screenshots appear here as the agent captures them.</span></div>
+                    <div id="feed"><span class="empty">Agent steps shall stream here in real time</span></div>
                 </div>
             </div>
-        </div>
+        </section>
 
-        <!-- RIGHT: live activity feed (full height) -->
-        <div class="col">
-            <div class="card grow">
-                <h2>Live activity</h2>
+        <!-- RIGHT col: screenshots vertical stack -->
+        <section class="col col-right">
+            <div class="card grow" id="panel-shots">
+                <div class="card-head">
+                    <h2>Screenshots <span class="count" id="shotCount"></span></h2>
+                </div>
                 <div class="card-body">
-                    <div id="feed"><span class="empty">Agent steps stream here in real time.</span></div>
+                    <div id="shots"><span class="empty">Screenshots shall appear here</span></div>
                 </div>
             </div>
-        </div>
+        </section>
     </main>
+
+    <!-- Mobile tab bar: switches center & right panels on small screens -->
+    <nav class="tabbar" id="tabbar" aria-label="Panel switcher">
+        <button class="tab active" data-tab="activity">Activity</button>
+        <button class="tab" data-tab="shots">Screenshots</button>
+    </nav>
 
     <div id="lightbox"><img id="lightboxImg" alt="screenshot" /></div>
 

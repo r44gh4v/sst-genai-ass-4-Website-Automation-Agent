@@ -1,87 +1,319 @@
-# Architecture Document
+# Architecture — Browser Automation Agent
 
-## 1. Goal
+A single-user, local-first web application that lets a human type any browser task in plain English and watches an LLM-driven agent execute it inside a real Chromium window. All progress streams to the UI in real time.
 
-Build an autonomous website automation agent that, given a **free-form natural-language request** naming any website and any action, drives a real browser to perform it - exposed through a local web UI. This is a mini version of tools like *Browser Use*.
+---
 
-## 2. High-level design
+## Stack at a glance
+
+| Layer | Technology |
+|---|---|
+| Runtime | Node.js + TypeScript (`tsx` transpiler, no build step) |
+| Browser | Playwright — Chromium, headed by default |
+| LLM brain | NVIDIA NIM API (`meta/llama-3.3-70b-instruct`) — tool calling |
+| LLM eyes | NVIDIA NIM API (`meta/llama-3.2-90b-vision-instruct`) — vision |
+| API protocol | OpenAI-compatible (`/v1/chat/completions`) |
+| Transport | HTTP + Server-Sent Events (Node `http` module, no Express) |
+| Frontend | Vanilla HTML / CSS / JS — no framework, no bundler |
+
+---
+
+## Directory layout
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ Browser (public/index.html)                                  │
-│   • prompt box + examples                                    │
-│   • live activity feed   ◄── Server-Sent Events (/events)    │
-│   • screenshot gallery                                       │
-└───────────────┬───────────────────────────▲─────────────────┘
-        POST /run {prompt}                   │ stream events
-                ▼                            │
-┌─────────────────────────────────────────────────────────────┐
-│ HTTP server (src/server.ts)                                  │
-│   • serves the UI, accepts /run, fans events to SSE clients  │
-│   • one run at a time (busy guard), opens/closes the browser │
-└───────────────┬─────────────────────────────────────────────┘
-                ▼
-┌─────────────────────────────────────────────────────────────┐
-│ AgentLoop (src/agent.ts)  - ReAct-style tool-use loop        │
-│   system prompt + user task ─► Nvidia NIM (OpenAI SDK)        │
-│   model returns tool calls ─► execute ─► feed results back   │
-│   repeat until TASK_COMPLETE or max iterations               │
-└───────────────┬─────────────────────────────────────────────┘
-                ▼
-┌─────────────────────────────────────────────────────────────┐
-│ BrowserTools (src/tools/browser.ts)  - Playwright wrappers    │
-│   open_browser, navigate_to_url, get_page_snapshot,          │
-│   find_element, fill_element, click_on_screen, double_click,  │
-│   send_keys, scroll, take_screenshot, close_browser           │
-└──────────────────────────────────────────────────────────────┘
+src/
+  index.ts          Entry point — calls startServer()
+  server.ts         HTTP server, SSE fan-out, run lifecycle
+  agent.ts          AgentLoop — ReAct tool-calling loop + system prompt
+  events.ts         AgentEventBus — process-wide pub/sub singleton
+  logger.ts         Levelled logger → console + event bus
+  config.ts         Env-var config with typed defaults
+  tools/
+    browser.ts      BrowserTools — 30+ Playwright-backed tool methods
+    definitions.ts  OpenAI-format tool schemas exposed to the LLM
 
-           event bus (src/events.ts) ── decouples all of the above
-                  from the SSE transport (publish/subscribe)
+public/
+  index.html        3-column UI shell
+  app.js            SSE client, live feed, screenshot gallery
+  styles.css        Olive-green design system (CSS custom properties)
+
+screenshots/
+  <YYYY-MM-DD_HH-MM-SS>/   One subfolder per run, PNG files preserved
 ```
 
-## 3. Key design decisions
+---
 
-### 3.1 Agent loop (ReAct pattern)
-The LLM is the planner. On each iteration it sees the full conversation (system prompt, user task, prior assistant turns, prior tool results) and either calls tools or stops. The model has no memory between API calls, so the **entire history is re-sent every iteration**. The loop drains *all* tool calls in a response before the next API call, because the OpenAI tool-calling protocol requires every `tool_call_id` to have a matching `tool` result message.
+## Full project architecture
 
-A hard `MAX_ITERATIONS` cap prevents runaway loops from burning API quota or hanging.
+```mermaid
+graph TB
+    subgraph USER["User's Browser Tab"]
+        UI["3-Column UI\nindex.html"]
+        AppJS["app.js\nSSE client · feed renderer\nscreenshot gallery"]
+        UI --> AppJS
+    end
 
-### 3.2 Website- and task-agnostic
-The previous version hardcoded the URL and a shadcn-specific task. Now the **system prompt is generic** and the concrete website + action arrive only via the user's prompt. The agent itself navigates (`navigate_to_url`) and discovers the page (`get_page_snapshot`) before acting - no per-site code.
+    subgraph SRV["Node.js Server  •  src/server.ts + src/index.ts"]
+        HTTP["HTTP Router\nGET / · /styles.css · /app.js\nPOST /run · /stop\nGET /events · /health"]
+        SSE["SSE Fan-out\n→ all connected tabs"]
+        BUS["AgentEventBus\nevents.ts\n(EventEmitter singleton)"]
+        LOG["Logger\nlogger.ts\nINFO · WARN · ERROR · TOOL"]
+        CFG["Config\nconfig.ts\nenv-var defaults"]
+        HTTP --> SSE
+        BUS --> SSE
+        LOG --> BUS
+    end
 
-### 3.3 Element detection strategy
-Two complementary tools give the LLM "eyes":
-- `get_page_snapshot` extracts headings, inputs (with labels/names/placeholders), buttons, and links as compact text - low-token DOM awareness without vision.
-- `find_element` resolves a CSS selector to center `(x, y)` coordinates for coordinate-based clicks.
+    subgraph AGENT["Agent Layer  •  src/agent.ts"]
+        LOOP["AgentLoop\nReAct pattern\nmax 30 iterations"]
+        SYSP["System Prompt\n+ User Task → messages[]"]
+        LOOP --> SYSP
+    end
 
-For form fields, `fill_element` uses Playwright's `locator.fill()`, which atomically sets the value and fires React's synthetic `onChange` - more reliable than click + per-key typing on controlled inputs.
+    subgraph TOOLS["Tool Layer  •  src/tools/"]
+        BT["BrowserTools\nbrowser.ts\n30+ tool methods"]
+        TDEFS["Tool Definitions\ndefinitions.ts\nOpenAI ChatCompletionTool[]"]
+    end
 
-### 3.4 Streaming via an event bus
-A single `EventEmitter` singleton (`src/events.ts`) decouples the agent/tools/logger from the HTTP transport. They just publish typed `AgentEvent`s; the server subscribes once and forwards each to all connected browsers over **Server-Sent Events**. SSE (not WebSockets) is the right fit: the stream is one-directional (server → UI) and works over plain HTTP with no extra dependencies.
+    subgraph NIM["NVIDIA NIM API"]
+        TXT["meta/llama-3.3-70b-instruct\nTool-calling brain\n→ plans & emits tool_calls"]
+        VIS["meta/llama-3.2-90b-vision-instruct\nVision eyes\n→ interprets screenshots"]
+    end
 
-Screenshots are streamed as base64 data URLs so they render in the UI the instant they are captured.
+    subgraph PW["Playwright  •  Chromium"]
+        PG["Live Browser Page\nreal web sessions\nno sandboxing limits"]
+        DISK["screenshots/run_*/\nPNG files on disk"]
+    end
 
-### 3.5 Zero extra runtime dependencies
-The server uses only Node's built-in `http` module. The whole stack is `playwright` + `openai` + `dotenv` - nothing added for the web layer - keeping setup friction minimal.
+    AppJS -- "POST /run {prompt}" --> HTTP
+    AppJS -- "GET /events (SSE)" --> SSE
+    HTTP -- "runTask()" --> LOOP
+    LOOP -- "chat.completions\n(tools, messages)" --> TXT
+    TXT -- "tool_calls[]" --> LOOP
+    LOOP -- "execute(name, args)" --> BT
+    BT -- "Playwright API" --> PG
+    BT -- "analyze_screen\n(base64 screenshot)" --> VIS
+    VIS -- "text description" --> BT
+    BT -- "emitEvent()" --> BUS
+    LOOP -- "emitEvent()" --> BUS
+    LOG -- "bus.emitEvent()" --> BUS
+    BT -- "auto-screenshot\n+ take_screenshot" --> DISK
+    LOOP -- "TDEFS" --> TXT
+```
 
-### 3.6 Concurrency & lifecycle
-The browser is a single shared resource, so the server enforces **one run at a time** (a `busy` flag → HTTP 409 while busy). Each run opens a fresh browser, clears old screenshots, and the `finally` block guarantees the browser closes even on error.
+---
 
-## 4. Error handling
+## Agentic loop — ReAct flow
 
-- Every `BrowserTools` method returns a `{ success, data | error }` envelope; failures are fed back to the LLM as tool results so it can adapt (scroll, re-snapshot, try another selector) instead of crashing.
-- `navigate_to_url` uses a 30 s timeout with `networkidle`.
-- The agent loop wraps argument parsing and surfaces a clear error if the model exceeds `MAX_ITERATIONS`.
-- The server catches run failures and emits a `status:error` event so the UI shows the reason.
+```mermaid
+sequenceDiagram
+    participant U as User (Browser)
+    participant S as HTTP Server
+    participant A as AgentLoop
+    participant L as LLM (NIM — 70B)
+    participant T as BrowserTools
+    participant B as Chromium
+    participant E as EventBus → SSE
 
-## 5. Configuration
+    U->>S: POST /run {"prompt": "..."}
+    S->>E: status: running — "Launching browser…"
+    S->>T: open_browser()
+    T->>B: chromium.launch({headless: false})
+    B-->>T: Browser ready
+    S->>A: agent.run(prompt, abortSignal)
 
-All settings come from environment variables (`.env`), loaded in `src/config.ts`:
-`NIM_API_KEY` (required), `NIM_BASE_URL`, `MODEL`, `HEADLESS`, `MAX_ITERATIONS`, `PORT`.
-The model must support OpenAI-style function/tool calling.
+    loop ReAct iterations (up to 30)
+        A->>E: iteration {current, max}
+        A->>L: [{role:"system"}, {role:"user"}, …history…]
+        Note over L: Full message history re-sent every turn
+        L-->>A: assistant {content?, tool_calls[]}
+        A->>E: assistant {content}
 
-## 6. Possible extensions
-- Multi-session support (one browser/agent per client) instead of a global single run.
-- A "stop" control to abort a run mid-flight.
-- Vision: feed screenshots to a multimodal model for purely visual element detection.
-- Persisted run history and downloadable screenshot bundles.
+        loop Each tool_call in response (batched)
+            A->>E: tool-call {name, args}
+            A->>T: execute(name, args)
+            T->>B: Playwright action
+            B-->>T: DOM / data / buffer
+
+            alt navigate_to_url
+                T->>E: screenshot "nav_*.png"
+            else click → URL changed
+                T->>E: screenshot "after_click_*.png"
+            else press_key Enter
+                T->>E: screenshot "after_enter_*.png"
+            else analyze_screen
+                T->>L: vision model (90B) + base64 image
+                L-->>T: text description
+                T->>E: screenshot "vision_*.png"
+            else take_screenshot (agent call)
+                T->>E: screenshot "<name>_*.png"
+            end
+
+            A->>E: tool-result {name, success, data|error}
+            A->>A: append tool result to messages[]
+        end
+
+        alt No tool_calls in response
+            A->>E: status: done {summary}
+            Note over A,L: Loop exits — task complete
+        else AbortSignal fired (Stop button)
+            Note over A: Returns immediately with partial summary
+        else max iterations (30) hit
+            A-->>S: throws — exceeded iteration cap
+            S->>E: status: error
+        end
+    end
+
+    S->>T: close_browser()
+    T->>B: browser.close()
+```
+
+---
+
+## Tool taxonomy
+
+BrowserTools exposes **30 tools** to the LLM, split into categories. The agent picks the right tool based on the task context.
+
+### Lifecycle & navigation
+| Tool | Purpose |
+|---|---|
+| `open_browser` | Launch Chromium (called automatically at run start) |
+| `navigate_to_url` | Go to URL, wait for `networkidle` |
+| `go_back` / `go_forward` | Browser history |
+| `reload_page` | Hard reload |
+| `close_browser` | Release Playwright resources |
+
+### Perception
+| Tool | Purpose |
+|---|---|
+| `get_page_snapshot` | **Primary sense** — DOM walker tags every visible interactive element with a stable `ref` id (`e1`, `e2`, …); returns URL, headings, elements |
+| `read_page_text` | Visible text body (articles, results) |
+| `get_page_info` | Quick URL + title without full snapshot |
+| `take_screenshot` | Capture PNG → stream to UI + save to disk |
+| `analyze_screen` | **Vision** — send screenshot to 90B vision model, ask a natural-language question |
+
+### Ref-based actions (preferred)
+| Tool | Purpose |
+|---|---|
+| `click` | Click by snapshot ref |
+| `double_click_element` | Double-click by ref |
+| `hover` | Hover by ref (reveals menus/tooltips) |
+| `fill` | Set input/textarea value — fires React `onChange` |
+| `clear_field` | Empty a field by ref |
+| `select_option` | Choose `<select>` option by ref |
+| `set_checkbox` | Check/uncheck checkbox/radio by ref |
+| `scroll_to` | Scroll element into view by ref |
+| `upload_file` | Set file input paths by ref |
+| `drag_and_drop` | Drag one ref onto another |
+
+### Selector-based fallbacks
+| Tool | Purpose |
+|---|---|
+| `find_element` | CSS selector → centre pixel coordinates |
+| `fill_element` | Fill by CSS selector (when no ref is available) |
+
+### Coordinate & keyboard
+| Tool | Purpose |
+|---|---|
+| `click_on_screen` | Click at absolute pixel (x, y) |
+| `drag_on_screen` | Mousedown → move 20 steps → mouseup — for canvas drawing |
+| `double_click` | Double-click at pixel |
+| `send_keys` | Type text into focused element |
+| `press_key` | Press key/chord (`Enter`, `Control+A`, `ArrowDown`, …) |
+| `scroll` | Wheel scroll by pixel deltas |
+
+### Sync / waiting
+| Tool | Purpose |
+|---|---|
+| `wait_for` | Wait for visible text, CSS selector to attach, or fixed ms |
+
+### Tabs
+| Tool | Purpose |
+|---|---|
+| `new_tab` | Open tab, optionally navigate |
+| `list_tabs` | All open tabs (index, url, title, active flag) |
+| `switch_tab` | Activate tab by index |
+| `close_tab` | Close tab by index |
+
+### Advanced
+| Tool | Purpose |
+|---|---|
+| `evaluate_js` | Run arbitrary JS in page, return JSON result |
+| `handle_dialog` | Pre-configure accept/dismiss for next native dialog |
+
+---
+
+## Event bus & SSE pipeline
+
+All components publish to a single `AgentEventBus` (Node `EventEmitter`). The server subscribes once at startup and fans every event out to all connected SSE clients.
+
+```
+AgentLoop ──┐
+BrowserTools─┼──► AgentEventBus ──► SSE fan-out ──► app.js switch(ev.type)
+Logger ──────┘
+```
+
+**Event types rendered by the frontend:**
+
+| Type | Fields | Rendered as |
+|---|---|---|
+| `status` | `state`, `message` | Status text (`Idle` / `Done` / `Error`) |
+| `iteration` | `current`, `max` | Step counter in header |
+| `log` | `level`, `message`, `data` | Feed row (INFO / WARN / ERROR) |
+| `tool-call` | `name`, `args` | Feed row with emoji icon + args preview |
+| `tool-result` | `name`, `success`, `result` | Feed row with ✓ / ✗ |
+| `assistant` | `content` | Feed row 🤖 Agent |
+| `screenshot` | `name`, `dataUrl` | Screenshot gallery (base64 inline) |
+
+---
+
+## Auto-screenshot triggers
+
+Screenshots fire automatically without the agent needing to call `take_screenshot`:
+
+| Trigger | Filename prefix | Condition |
+|---|---|---|
+| `navigate_to_url` success | `nav_` | Every successful navigation |
+| `navigate_to_url` timeout | `nav_partial_` | networkidle timed out (page still usable) |
+| `click` causing URL change | `after_click_` | `page.url()` differs before vs after click (400 ms wait) |
+| `press_key("Enter")` | `after_enter_` | After 800 ms settle wait |
+| `analyze_screen` | `vision_` | Always — screenshot sent to vision model is also shown in UI |
+| `take_screenshot` (agent call) | `<filename>_` | Agent-initiated explicit milestone |
+
+All files land in `screenshots/<YYYY-MM-DD_HH-MM-SS>/` — one folder per run, never deleted.
+
+---
+
+## Configuration
+
+All config lives in `.env`. Typed defaults in `src/config.ts`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `NIM_API_KEY` | *(required)* | NVIDIA NIM API key |
+| `NIM_BASE_URL` | `https://integrate.api.nvidia.com/v1` | OpenAI-compatible base URL |
+| `MODEL` | `meta/llama-3.3-70b-instruct` | Tool-calling LLM |
+| `VISION_MODEL` | `meta/llama-3.2-90b-vision-instruct` | Vision LLM |
+| `VISION_ENABLED` | `true` | Set `false` to hide `analyze_screen` from the agent |
+| `TEMPERATURE` | `0.2` | Low = deterministic tool calls |
+| `HEADLESS` | `false` | Set `true` for server / CI environments |
+| `MAX_ITERATIONS` | `30` | Safety cap on ReAct loop depth |
+| `PORT` | `3000` | HTTP server port |
+
+---
+
+## Key design decisions
+
+**ReAct completion keyed on tool_calls absence, not finish_reason** — NIM/Llama over the OpenAI-compatible endpoint sometimes reports `finish_reason: "stop"` even when `tool_calls` are present. The loop exits only when `tool_calls` is absent or empty, never on `finish_reason` alone.
+
+**Full message history re-sent every turn** — the model has no persistent memory between API calls; the entire `messages[]` array grows with each iteration and is sent in full. Complete context of every observation and action is always available.
+
+**Ref-based DOM snapshot preferred over coordinates** — `get_page_snapshot` injects a DOM walker that tags every visible interactive element with `data-agent-ref`. Ref-based actions survive small layout changes and are more reliable than pixel coordinates. Coordinates are a fallback for canvas / icon-only UIs.
+
+**Viewport: null** — Playwright launches Chromium with no forced viewport, so the window adapts to the OS default and the user can resize freely.
+
+**One run at a time** — a `busy` boolean guards the `/run` endpoint. Concurrent requests get HTTP 409. The browser is a single shared resource.
+
+**Vision as opt-out** — `analyze_screen` is included in the tool list only when `VISION_ENABLED=true`. Without it the agent relies on DOM snapshot + text only, saving API quota for simple tasks.
+
+**No build step** — `tsx` transpiles TypeScript on the fly. Changes to `src/` require a server restart but no compile step, keeping the dev loop fast.
